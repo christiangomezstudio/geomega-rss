@@ -1,0 +1,36 @@
+name: Build & Publish RSS
+
+on:
+  workflow_dispatch:      # allow manual "Run workflow"
+  schedule:
+    - cron: "0 * * * *"   # every hour
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build merged RSS
+        run: |
+          python scripts/merge_rss.py
+
+      - name: Commit & push updated rss.xml
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: "docs/rss.xml"
+          message: "chore: update merged RSS"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
