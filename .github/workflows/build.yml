@@ -4,8 +4,10 @@ on:
   workflow_dispatch:      # allow manual "Run workflow"
   schedule:
     - cron: "0 * * * *"   # every hour
+    
 permissions:
   contents: write
+  
 jobs:
   build:
     runs-on: ubuntu-latest
