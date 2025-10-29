@@ -1,128 +1,184 @@
 #!/usr/bin/env python3
-# Merges multiple RSS/Atom feeds, dedupes, sorts, and writes docs/rss.xml
+# -*- coding: utf-8 -*-
 
-import os
+"""
+Build a GlobeNewswire-only RSS feed and publish it as docs/rss.xml
+- Input: one or more RSS feeds (GlobeNewswire-only)
+- Output: merged, de-duplicated, newest-first RSS 2.0 at docs/rss.xml
+"""
+
+import hashlib
 import time
-import html
-from datetime import datetime, timezone
-from email.utils import format_datetime
-import feedparser
+import email.utils as eut
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 import xml.etree.ElementTree as ET
 
-# ======== CONFIG ========
+# ---------------------------
+# CONFIG — GLOBE ONLY
+# ---------------------------
 FEEDS = [
-    # Newsfile (Geomega full)
-    "https://feeds.newsfilecorp.com/company/11749/full",
-    # GlobeNewswire via RSS.app (your feed)
+    # Your GlobeNewswire search feed (from earlier):
     "https://rss.app/feeds/ONebqtvoXhDJAEzd.xml",
+    # If you later find other GlobeNewswire RSS endpoints, just add them here.
 ]
-MAX_ITEMS = 1000  # keep up to this many newest items
-CHANNEL_TITLE = "GEOMEGA — Merged Press Releases (Newsfile + GlobeNewswire)"
-CHANNEL_LINK  = "https://www.geomega.ca/"
-CHANNEL_DESC  = "Merged feed combining Newsfile and GlobeNewswire results for Geomega."
-OUTPUT_PATH   = os.path.join("docs", "rss.xml")
-# ========================
 
-def _best_dt(entry):
+OUTPUT_PATH = "docs/rss.xml"
+FEED_TITLE = "Geomega — GlobeNewswire (Merged)"
+FEED_LINK  = "https://christiangomezstudio.github.io/geomega-rss/rss.xml"
+FEED_DESC  = "Merged GlobeNewswire items for Geomega (GitHub Pages build)."
+MAX_ITEMS  = 1000  # cap for safety
+
+# ---------------------------
+# UTIL
+# ---------------------------
+def fetch(url: str) -> str:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=30) as r:
+        return r.read().decode("utf-8", errors="ignore")
+
+def parse_rss(xml_text: str):
     """
-    Try to get a timezone-aware datetime from an entry.
-    Uses published_parsed, then updated_parsed, else now().
+    Very tolerant RSS item parser. Returns list of dicts with:
+    title, link, pubDate (RFC2822), description, guid
     """
-    dt_tuple = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-    if dt_tuple:
-        # time.struct_time -> aware datetime (UTC)
-        return datetime.fromtimestamp(time.mktime(dt_tuple), tz=timezone.utc)
-    # Fallback: current time (UTC)
-    return datetime.now(tz=timezone.utc)
-
-def _text(field):
-    return (field or "").strip()
-
-def collect_items(url):
-    d = feedparser.parse(url)
     items = []
-    for e in d.entries:
-        title = _text(getattr(e, "title", ""))
-        link  = _text(getattr(e, "link", ""))
-        desc  = _text(getattr(e, "summary", "")) or _text(getattr(e, "description", ""))
-        dt    = _best_dt(e)
-        src   = "Newsfile" if "newsfilecorp" in url else ("GlobeNewswire" if "rss.app" in url or "globenewswire" in url else "Source")
-        if not link and hasattr(e, "id"):
-            link = _text(e.id)
-        if not title and link:
-            title = link
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return items
+
+    # RSS 2.0: <rss><channel><item>
+    chan = root.find("./channel")
+    if chan is None:
+        # Atom fallback (not expected but just in case)
+        # Map Atom <entry> to RSS-like dict
+        for entry in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+            title = (entry.findtext("{http://www.w3.org/2005/Atom}title") or "").strip()
+            link_el = entry.find("{http://www.w3.org/2005/Atom}link")
+            link = (link_el.get("href") if link_el is not None else "").strip()
+            updated = (entry.findtext("{http://www.w3.org/2005/Atom}updated") or "").strip()
+            summary = (entry.findtext("{http://www.w3.org/2005/Atom}summary") or "").strip()
+            guid = link or (title + updated)
+
+            # Convert ISO8601 -> RFC2822 if possible
+            pub_rfc2822 = updated
+            try:
+                # crude ISO8601 -> epoch -> RFC2822
+                from datetime import datetime
+                dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                pub_rfc2822 = eut.formatdate(dt.timestamp(), usegmt=True)
+            except Exception:
+                pass
+
+            items.append({
+                "title": title,
+                "link": link,
+                "pubDate": pub_rfc2822,
+                "description": summary,
+                "guid": guid
+            })
+        return items
+
+    for it in chan.findall("./item"):
+        title = (it.findtext("title") or "").strip()
+        link  = (it.findtext("link") or "").strip()
+        pub   = (it.findtext("pubDate") or "").strip()
+        desc  = (it.findtext("description") or "").strip()
+        guid  = (it.findtext("guid") or "").strip() or link or (title + pub)
+
+        # Ensure pubDate is RFC2822 (some feeds omit or use other formats)
+        if not pub:
+            # best-effort: now
+            pub = eut.formatdate(time.time(), usegmt=True)
+
         items.append({
             "title": title,
             "link": link,
-            "desc": desc,
-            "date": dt,
-            "source": src,
+            "pubDate": pub,
+            "description": desc,
+            "guid": guid
         })
     return items
 
-def build_rss(items):
-    # Root
-    rss = ET.Element("rss", attrib={"version": "2.0"})
-    channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = CHANNEL_TITLE
-    ET.SubElement(channel, "link").text = CHANNEL_LINK
-    ET.SubElement(channel, "description").text = CHANNEL_DESC
-    ET.SubElement(channel, "lastBuildDate").text = format_datetime(datetime.now(timezone.utc))
+def as_epoch(pub_date: str) -> float:
+    try:
+        # RSS pubDate typically RFC2822
+        tt = eut.parsedate_to_datetime(pub_date)
+        return tt.timestamp()
+    except Exception:
+        return 0.0
 
-    for it in items:
-        item = ET.SubElement(channel, "item")
-        ET.SubElement(item, "title").text = it["title"]
-        ET.SubElement(item, "link").text = it["link"]
-        ET.SubElement(item, "guid").text = it["link"] or (it["title"] + str(it["date"].timestamp()))
-        ET.SubElement(item, "pubDate").text = format_datetime(it["date"])
-        desc_text = it["desc"]
-        if it["source"]:
-            # Append a small source note
-            desc_text = f"{desc_text}\n\n(Source: {it['source']})" if desc_text else f"(Source: {it['source']})"
-        # Minimal escaping; many readers accept plain text description
-        ET.SubElement(item, "description").text = html.escape(desc_text)
+def build_guid_key(item: dict) -> str:
+    base = item.get("guid") or (item.get("link") or "") or (item.get("title","") + item.get("pubDate",""))
+    return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()
 
-    return rss
-
+# ---------------------------
+# MAIN
+# ---------------------------
 def main():
-    # 1) Fetch and merge
-    merged = []
+    all_items = []
     for url in FEEDS:
         try:
-            merged.extend(collect_items(url))
-        except Exception as ex:
-            print(f"[WARN] Failed parsing {url}: {ex}")
+            xml_text = fetch(url)
+            items = parse_rss(xml_text)
+            all_items.extend(items)
+        except (URLError, HTTPError) as e:
+            # Skip on fetch errors
+            continue
+        except Exception:
+            continue
 
-    # 2) Deduplicate by link, then by (title,date)
-    seen_links = set()
+    # De-dupe by GUID/link hash
+    seen = set()
     unique = []
-    for it in merged:
-        key = it["link"].strip()
-        if key and key not in seen_links:
-            seen_links.add(key)
-            unique.append(it)
-        elif not key:
-            alt_key = (it["title"], it["date"].isoformat())
-            if alt_key not in seen_links:
-                seen_links.add(alt_key)
-                unique.append(it)
+    for it in all_items:
+        key = build_guid_key(it)
+        if key in seen:
+            continue
+        seen.add(key)
+        # append a source marker at the end of description for front-end labeling (optional)
+        desc = (it.get("description") or "").strip()
+        if "(Source:" not in desc:
+            # Always mark as GlobeNewswire for this feed
+            if desc:
+                desc = f"{desc}\n(Source: GlobeNewswire)"
+            else:
+                desc = "(Source: GlobeNewswire)"
+        it["description"] = desc
+        unique.append(it)
 
-    # 3) Sort newest first
-    unique.sort(key=lambda x: x["date"], reverse=True)
-
-    # 4) Trim
+    # Sort newest first
+    unique.sort(key=lambda x: as_epoch(x.get("pubDate","")), reverse=True)
     unique = unique[:MAX_ITEMS]
 
-    # 5) Build XML
-    rss = build_rss(unique)
+    # Build minimal RSS 2.0
+    rss = ET.Element("rss", version="2.0")
+    channel = ET.SubElement(rss, "channel")
 
-    # 6) Ensure docs/ exists and write
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    tree = ET.ElementTree(rss)
-    # Pretty print
-    ET.indent(tree, space="  ", level=0)
-    tree.write(OUTPUT_PATH, encoding="utf-8", xml_declaration=True)
-    print(f"[OK] Wrote {OUTPUT_PATH} with {len(unique)} items.")
+    ET.SubElement(channel, "title").text = FEED_TITLE
+    ET.SubElement(channel, "link").text  = FEED_LINK
+    ET.SubElement(channel, "description").text = FEED_DESC
+    ET.SubElement(channel, "lastBuildDate").text = eut.formatdate(time.time(), usegmt=True)
+
+    for it in unique:
+        el = ET.SubElement(channel, "item")
+        ET.SubElement(el, "title").text = it.get("title","")
+        ET.SubElement(el, "link").text  = it.get("link","")
+        ET.SubElement(el, "guid").text  = it.get("guid","") or it.get("link","")
+        ET.SubElement(el, "pubDate").text = it.get("pubDate","")
+        # description must be inside CDATA if it might contain HTML entities
+        desc_el = ET.SubElement(el, "description")
+        # Use a simple escape; for safety we wrap as plain text (front-end strips HTML anyway)
+        desc_el.text = it.get("description","")
+
+    # Ensure docs/ exists
+    import os
+    os.makedirs("docs", exist_ok=True)
+
+    # Write pretty
+    ET.indent(rss)  # Python 3.9+
+    ET.ElementTree(rss).write(OUTPUT_PATH, encoding="utf-8", xml_declaration=True)
 
 if __name__ == "__main__":
     main()
