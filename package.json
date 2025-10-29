@@ -1,11 +1,12 @@
 {
   "name": "geomega-rss",
-  "version": "1.0.0",
   "type": "module",
+  "version": "1.0.0",
+  "private": true,
   "scripts": {
     "build": "node generate_rss.mjs"
   },
   "dependencies": {
-    "node-fetch": "^3.3.2"
+    "cheerio": "^1.0.0-rc.12"
   }
 }
