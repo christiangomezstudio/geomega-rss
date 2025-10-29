@@ -1,12 +1,11 @@
-// generate_rss.mjs — crawl all GlobeNewswire search pages for “Geomega”
+// generate_rss.mjs — Full Geomega GlobeNewswire feed using their JSON API
 import fs from "fs";
 import fetch from "node-fetch";
 
 const KEYWORD = "geomega";
-const BASE = `https://www.globenewswire.com/search/keyword/${KEYWORD}?page=`;
 const OUT = "docs/rss.xml";
-const MAX_PAGES = 300;
-const MAX_ITEMS = 1000;
+const MAX_PAGES = 200; // fetch up to 200 pages × 20 results = 4000+ items
+const API = "https://www.globenewswire.com/JsonFeed/Search";
 
 // helper
 function esc(s = "") {
@@ -16,68 +15,43 @@ function esc(s = "") {
     .replaceAll(">", "&gt;");
 }
 
-async function getText(url) {
+async function getPage(page) {
+  const url = `${API}?keyword=${KEYWORD}&page=${page}&pageSize=20&language=en`;
   const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  if (!r.ok) throw new Error(`HTTP ${r.status} on ${url}`);
-  return await r.text();
-}
-
-function extractLinks(html) {
-  const re =
-    /https:\/\/www\.globenewswire\.com\/news-release\/\d{4}\/\d{2}\/\d{2}\/\d+\/0\/en\/[^"<>]+\.html/g;
-  return [...new Set(html.match(re) || [])];
-}
-
-async function scrapeArticle(url) {
-  const html = await getText(url);
-  const title =
-    html.match(/<meta property="og:title" content="([^"]+)"/i)?.[1] ||
-    html.match(/<title>(.*?)<\/title>/i)?.[1] ||
-    "Untitled";
-  const desc =
-    html.match(/<meta property="og:description" content="([^"]+)"/i)?.[1] || "";
-  const date =
-    html.match(/"datePublished"\s*:\s*"([^"]+)"/i)?.[1] ||
-    html.match(/<meta property="article:published_time" content="([^"]+)"/i)?.[1];
-  const pubDate = date ? new Date(date).toUTCString() : new Date().toUTCString();
-  return { title, link: url, pubDate, description: desc };
+  if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+  const json = await r.json();
+  return json.items || [];
 }
 
 async function main() {
-  console.log("🔍 Collecting article links…");
-  const links = new Set();
+  console.log("🔍 Fetching GlobeNewswire JSON feed...");
+  let all = [];
   for (let p = 1; p <= MAX_PAGES; p++) {
-    const html = await getText(BASE + p);
-    const found = extractLinks(html);
-    if (!found.length) break;
-    for (const f of found) links.add(f);
-    console.log(`Page ${p}: +${found.length} links`);
-    if (found.length < 20) break;
+    const items = await getPage(p);
+    if (!items.length) break;
+    all = all.concat(items);
+    console.log(`Page ${p}: +${items.length} items (total ${all.length})`);
+    if (items.length < 20) break;
   }
 
-  const all = [];
-  console.log(`📰 Found ${links.size} article URLs. Fetching details…`);
-  for (const L of links) {
-    try {
-      const art = await scrapeArticle(L);
-      all.push(art);
-      if (all.length >= MAX_ITEMS) break;
-    } catch (e) {
-      console.warn("skip", L);
-    }
-  }
+  const formatted = all.map((x) => ({
+    title: x.title?.trim() || "Untitled",
+    link: `https://www.globenewswire.com${x.url}`,
+    pubDate: new Date(x.date).toUTCString(),
+    description: `${x.intro || ""} (Source: GlobeNewswire)`
+  }));
 
-  all.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+  formatted.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
 
-  const items = all
+  const itemsXML = formatted
     .map(
-      (x) => `
+      (i) => `
 <item>
-  <title>${esc(x.title)}</title>
-  <link>${esc(x.link)}</link>
-  <guid>${esc(x.link)}</guid>
-  <pubDate>${x.pubDate}</pubDate>
-  <description>${esc(x.description)} (Source: GlobeNewswire)</description>
+  <title>${esc(i.title)}</title>
+  <link>${esc(i.link)}</link>
+  <guid>${esc(i.link)}</guid>
+  <pubDate>${i.pubDate}</pubDate>
+  <description>${esc(i.description)}</description>
 </item>`
     )
     .join("\n");
@@ -85,17 +59,17 @@ async function main() {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
 <channel>
-<title>Geomega — GlobeNewswire (All Pages)</title>
-<link>https://www.globenewswire.com/search/keyword/${KEYWORD}</link>
-<description>Full GlobeNewswire results for ${KEYWORD}</description>
-<lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
-${items}
+  <title>Geomega — GlobeNewswire (All Pages)</title>
+  <link>https://www.globenewswire.com/search/keyword/${KEYWORD}</link>
+  <description>Full GlobeNewswire results for ${KEYWORD}</description>
+  <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+  ${itemsXML}
 </channel>
 </rss>`;
 
   fs.mkdirSync("docs", { recursive: true });
   fs.writeFileSync(OUT, xml);
-  console.log(`✅ Wrote ${all.length} items → ${OUT}`);
+  console.log(`✅ Done — wrote ${formatted.length} items to ${OUT}`);
 }
 
 main().catch((e) => {
