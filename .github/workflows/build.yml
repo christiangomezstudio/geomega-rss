@@ -2,33 +2,33 @@ name: Build RSS (GlobeNewswire)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 */6 * * *"  # every 6 hours
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Use Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
-      - name: Install
-        run: npm ci || npm i
+      - name: Install deps
+        run: npm ci
 
       - name: Build RSS
         run: npm run build
 
-      - name: Commit & Push
+      - name: Commit & push rss.xml
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p docs
+          test -f docs/rss.xml
           git add docs/rss.xml
-          git commit -m "build: update rss.xml" || echo "No changes"
+          git commit -m "build: update rss.xml" || echo "No changes to commit"
           git push
