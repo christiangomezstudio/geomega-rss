@@ -1,6 +1,6 @@
 {
   "name": "geomega-rss",
-  "private": true,
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "build": "node generate_rss.mjs"
