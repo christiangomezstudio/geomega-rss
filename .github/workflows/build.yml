@@ -1,9 +1,9 @@
-name: Build & Publish RSS (Globe only)
+name: Build GlobeNewswire RSS
 
 on:
-  workflow_dispatch:      # manual run
+  workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"   # hourly
+    - cron: "0 5 * * *"   # runs every day at 5 AM UTC
 
 permissions:
   contents: write
@@ -12,22 +12,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: "20"
 
-      - name: Build Globe-only RSS
+      - name: Install dependencies
         run: |
-          python scripts/merge_rss.py
+          npm init -y
+          npm install node-fetch@3 fast-xml-parser@4
+
+      - name: Run script
+        run: node scripts/geomega-globenewswire.js
 
       - name: Commit & push rss.xml
         uses: EndBug/add-and-commit@v9
         with:
           add: "docs/rss.xml"
-          message: "chore: update GlobeNewswire-only feed"
+          message: "auto: update GlobeNewswire RSS"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
