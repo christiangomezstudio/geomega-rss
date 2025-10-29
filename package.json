@@ -1,0 +1,11 @@
+{
+  "name": "geomega-rss",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node generate_rss.mjs"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
